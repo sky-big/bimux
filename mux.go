@@ -11,15 +11,16 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-type rpcServeFunc func(route uint32, req []byte) (rsp []byte)
-type onewayFunc func(route uint32, req []byte)
+type RpcServeFunc func(route int32, req []byte, m Muxer) []byte
+type OnewayFunc func(route int32, req []byte, m Muxer)
+type StopFunc func(Muxer)
 
 var ErrTimeout error = errors.New("timeout")
 
 // mockgen -source=./mux.go -destination=mux_mock.go -package=bimux
 type Muxer interface {
-	Send(route uint32, data []byte) error
-	Rpc(route uint32, req []byte, timeout time.Duration) (rsp []byte, err error)
+	Send(route int32, data []byte) error
+	Rpc(route int32, req []byte, timeout time.Duration) (rsp []byte, err error)
 	Wait() error
 	Close()
 }
@@ -32,8 +33,11 @@ type muxer struct {
 	callerRsp      map[uint64]chan *Message
 	callerRspMutex sync.Mutex
 
-	rpcServeHook    rpcServeFunc
-	onewayServeHook onewayFunc
+	rpcServeHook    RpcServeFunc
+	onewayServeHook OnewayFunc
+	stopHook        StopFunc
+
+	isStop bool
 
 	wg sync.WaitGroup
 
@@ -42,42 +46,52 @@ type muxer struct {
 }
 
 /*
- Connection with web
+ Connection with web(server)
 */
 var upgrader = websocket.Upgrader{} // use default options
 
-func NewWebSocketMuxer(w http.ResponseWriter, r *http.Request, rpcServeHook rpcServeFunc, onewayServeHook onewayFunc) (Muxer, error) {
+func NewWebSocketMuxer(
+	w http.ResponseWriter,
+	r *http.Request,
+	rpcServeHook RpcServeFunc,
+	onewayServeHook OnewayFunc,
+) (Muxer, error) {
 	c, err := upgrader.Upgrade(w, r, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	return newMuxer(newWSConn(c), rpcServeHook, onewayServeHook)
+	return newMuxer(newWSConn(c), rpcServeHook, onewayServeHook, nil)
 }
 
 /*
- Connection with websocket addr
+ Connection with websocket addr(client)
 */
-func Dial(addr string, rpcServeHook rpcServeFunc, onewayServeHook onewayFunc) (Muxer, error) {
+func Dial(
+	addr string,
+	rpcServeHook RpcServeFunc,
+	onewayServeHook OnewayFunc,
+	stopHook StopFunc,
+) (Muxer, error) {
 	c, _, err := websocket.DefaultDialer.Dial(addr, nil)
 	if err != nil {
 		return nil, err
 	}
 
-	return newMuxer(newWSConn(c), rpcServeHook, onewayServeHook)
+	return newMuxer(newWSConn(c), rpcServeHook, onewayServeHook, stopHook)
 }
 
 /*
  Send Message
 */
-func (m *muxer) Send(route uint32, data []byte) error {
+func (m *muxer) Send(route int32, data []byte) error {
 	return m.writeMsg(m.newMsg(Flag_oneway, route, data))
 }
 
 /*
  Rpc Send Message
 */
-func (m *muxer) Rpc(route uint32, req []byte, timeout time.Duration) (rsp []byte, err error) {
+func (m *muxer) Rpc(route int32, req []byte, timeout time.Duration) (rsp []byte, err error) {
 	// in case response will be handled before Ask get lock, create channel first and send request.
 	reqMsg := m.newMsg(Flag_request, route, req)
 	waitChan := m.register(reqMsg.Number)
@@ -101,15 +115,18 @@ func (m *muxer) Wait() error {
 }
 
 func (m *muxer) Close() {
+	m.isStop = true
 	m.conn.Close()
 }
 
-func newMuxer(conn Connection, rpcServeHook rpcServeFunc, onewayServeHook onewayFunc) (Muxer, error) {
+func newMuxer(conn Connection, rpcServeHook RpcServeFunc, onewayServeHook OnewayFunc, stopHook StopFunc) (Muxer, error) {
 	m := &muxer{
-		conn:            conn,
+		conn:      conn,
+		callerRsp: make(map[uint64]chan *Message),
+
 		rpcServeHook:    rpcServeHook,
 		onewayServeHook: onewayServeHook,
-		callerRsp:       make(map[uint64]chan *Message),
+		stopHook:        stopHook,
 	}
 
 	m.wg.Add(1)
@@ -130,7 +147,7 @@ func (m *muxer) readMsg() (*Message, error) {
 	return &msg, err
 }
 
-func (m *muxer) newMsg(flag Flag, route uint32, data []byte) *Message {
+func (m *muxer) newMsg(flag Flag, route int32, data []byte) *Message {
 	return &Message{
 		Number: atomic.AddUint64(&m.number, uint64(1)),
 		Flag:   flag,
@@ -139,11 +156,11 @@ func (m *muxer) newMsg(flag Flag, route uint32, data []byte) *Message {
 	}
 }
 
-func (m *muxer) responseMsg(reqMsg *Message, data []byte) *Message {
+func (m *muxer) responseMsg(reqMsg *Message, route int32, data []byte) *Message {
 	return &Message{
 		Number: reqMsg.Number,
 		Flag:   Flag_response,
-		Route:  reqMsg.Route,
+		Route:  route,
 		Data:   data,
 	}
 }
@@ -187,8 +204,12 @@ func (m *muxer) loop() {
 	for {
 		msg, err := m.readMsg()
 		if err != nil {
+			if !m.isStop && m.stopHook != nil {
+				m.stopHook(m)
+			}
 			return
 		}
+
 		switch msg.Flag {
 		case Flag_response:
 			m.notify(msg.Number, msg)
@@ -196,8 +217,8 @@ func (m *muxer) loop() {
 		case Flag_request:
 			if m.rpcServeHook != nil {
 				go func(tmp *Message) {
-					rsp := m.rpcServeHook(tmp.Route, tmp.Data)
-					rspMsg := m.responseMsg(tmp, rsp)
+					rsp := m.rpcServeHook(tmp.Route, tmp.Data, m)
+					rspMsg := m.responseMsg(tmp, tmp.Route, rsp)
 					m.writeMsg(rspMsg)
 				}(msg)
 			}
@@ -205,7 +226,7 @@ func (m *muxer) loop() {
 		case Flag_oneway:
 			if m.onewayServeHook != nil {
 				go func(tmp *Message) {
-					m.onewayServeHook(tmp.Route, tmp.Data)
+					m.onewayServeHook(tmp.Route, tmp.Data, m)
 				}(msg)
 			}
 		}

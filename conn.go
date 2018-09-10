@@ -11,24 +11,24 @@ type Connection interface {
 	WritePacket(data []byte) error
 }
 
-type connection struct {
+type wsConn struct {
 	con *websocket.Conn
 }
 
 func newWSConn(c *websocket.Conn) Connection {
-	return &connection{con: c}
+	return &wsConn{con: c}
 }
 
-func (c *connection) Close() {
+func (c *wsConn) Close() {
 	c.con.Close()
 }
 
-func (c *connection) ReadPacket() (p []byte, err error) {
+func (c *wsConn) ReadPacket() (p []byte, err error) {
 	_, message, err := c.con.ReadMessage()
 	return message, err
 }
 
-func (c *connection) WritePacket(data []byte) error {
+func (c *wsConn) WritePacket(data []byte) error {
 
 	return c.con.WriteMessage(websocket.BinaryMessage, data)
 }
