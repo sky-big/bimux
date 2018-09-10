@@ -1,6 +1,6 @@
 syntax = "proto3";
 
-package mux;
+package bimux;
 
 enum Flag {
     request = 0; 
@@ -12,7 +12,7 @@ message Message {
     uint64 number = 1;
     Flag flag = 2;
 
-    uint32 route = 3;
+    int32 route = 3;
     bytes data = 4;
 }
 

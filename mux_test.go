@@ -11,8 +11,7 @@ import (
 )
 
 func TestNewMsg(t *testing.T) {
-
-	m := new(Muxer)
+	m := new(muxer)
 	m1 := m.newMsg(1, 1, nil)
 	m2 := m.newMsg(2, 2, nil)
 	assert.NotEqual(t, m1.Number, m2.Number)
@@ -29,7 +28,7 @@ func TestReadMsg(t *testing.T) {
 	b, _ := proto.Marshal(msg)
 	conn.EXPECT().ReadPacket().Return(b, nil)
 
-	m := new(Muxer)
+	m := new(muxer)
 	m.conn = conn
 	ret, err := m.readMsg()
 	assert.Equal(t, msg.Number, ret.Number)
@@ -48,7 +47,7 @@ func TestWriteMsg(t *testing.T) {
 }
 
 func TestRegister(t *testing.T) {
-	m := new(Muxer)
+	m := new(muxer)
 	m.callerRsp = make(map[uint64]chan *Message)
 	var no uint64
 	for no = 0; no < 100; no++ {
@@ -81,6 +80,7 @@ func (c *BenchCon) ReadPacket() (p []byte, err error) {
 	p = <-c.ch
 	return p, nil
 }
+
 func (c *BenchCon) WritePacket(data []byte) error {
 	var msg Message
 	err := proto.Unmarshal(data, &msg)
@@ -91,6 +91,10 @@ func (c *BenchCon) WritePacket(data []byte) error {
 	ret, _ := proto.Marshal(&msg)
 	c.ch <- ret
 	return nil
+}
+
+func (c *BenchCon) Close() {
+	close(c.ch)
 }
 
 func BenchmarkRegister(b *testing.B) {

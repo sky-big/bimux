@@ -7,8 +7,6 @@ import (
 	"os"
 	"os/signal"
 
-	"github.com/gorilla/websocket"
-
 	".."
 )
 
@@ -22,13 +20,7 @@ func main() {
 
 	u := url.URL{Scheme: "ws", Host: *addr, Path: "/mux"}
 
-	c, _, err := websocket.DefaultDialer.Dial(u.String(), nil)
-	if err != nil {
-		fmt.Println("dial:", err)
-	}
-	defer c.Close()
-
-	mux, _ := bimux.NewWebSocketMuxer(c,
+	mux, _ := bimux.Dial(u.String(),
 		func(route uint32, req []byte) []byte {
 			switch route {
 			case 1:
@@ -38,7 +30,7 @@ func main() {
 			return nil
 		},
 		nil)
+	mux.Close()
 	mux.Wait()
 	fmt.Println("client over")
-
 }

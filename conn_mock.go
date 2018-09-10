@@ -32,6 +32,16 @@ func (m *MockConnection) EXPECT() *MockConnectionMockRecorder {
 	return m.recorder
 }
 
+// Close mocks base method
+func (m *MockConnection) Close() {
+	m.ctrl.Call(m, "Close")
+}
+
+// Close indicates an expected call of Close
+func (mr *MockConnectionMockRecorder) Close() *gomock.Call {
+	return mr.mock.ctrl.RecordCallWithMethodType(mr.mock, "Close", reflect.TypeOf((*MockConnection)(nil).Close))
+}
+
 // ReadPacket mocks base method
 func (m *MockConnection) ReadPacket() ([]byte, error) {
 	ret := m.ctrl.Call(m, "ReadPacket")
